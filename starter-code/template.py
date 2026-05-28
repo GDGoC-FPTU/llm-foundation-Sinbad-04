@@ -12,6 +12,9 @@ Instructions:
 import os
 import time
 from typing import Any, Callable
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Estimated costs per 1M INPUT & OUTPUT tokens (USD) as of March 2026
@@ -43,6 +46,13 @@ def call_openai(
     top_p: float = 0.9,
     max_tokens: int = 256,
 ) -> tuple[str, float, dict]:
+    from openai import OpenAI
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        api_key = "mock_key"
+    client = OpenAI(api_key=api_key)
+    start_time = time.time()
+    response = client.chat.completions.create()
     """
     Call the OpenAI Chat Completions API and return the response text, latency,
     and token usage stats.
@@ -80,6 +90,46 @@ def call_gemini(
     top_p: float = 0.9,
     max_tokens: int = 256,
 ) -> tuple[str, float, dict]:
+    api_keys = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "mock-key"
+    start_time = time.time()
+    try:
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=api_keys)
+        config = types.GenerateContentConfig(
+            temperature=temperature,
+            top_p=top_p,
+            max_output_tokens=max_tokens,
+        )
+
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=config,
+        )
+
+        latency = time.time() - start_time
+
+        response_text = response.text or ""
+
+        usage = {
+            "input_tokens": response.usage_metadata.prompt_token_count,
+            "output_tokens": response.usage_metadata.candidates_token_count,
+        }
+
+        return response_text, latency, usage
+    except Exception as e:
+        latency = time.time() - start_time
+
+        return (
+            f"[Gemini error] {str(e)}",
+            latency,
+            {
+                "input_tokens": 0,
+                "output_tokens": 0,
+            },
+        )
+
     """
     Call the Google Gemini API (using Gemini 2.5 Flash as standard) and return
     the response text, latency, and token usage stats.
@@ -194,14 +244,83 @@ def streaming_chatbot() -> None:
         - Streams response tokens from Gemini 2.5 Flash as they arrive.
         - Maintains the last 3 turns of conversation history for context.
         - Typing 'quit' or 'exit' ends the session.
-
-    Hints:
-        - Maintain a history list of conversation turns.
-        - Check how to stream responses using client.chats or model.generate_content(..., stream=True).
-        - Keep history limited to the last 3 turns to optimize context window and costs.
     """
-    # TODO: Setup interactive session, prompt user for input, stream response, and update history.
-    raise NotImplementedError("Implement streaming_chatbot")
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+    if not api_key:
+        print("\033[93m[System Warning] GEMINI_API_KEY environment variable not set. Running in dummy mode.\033[0m")
+        api_key = "mock-key"
+
+    print("\n\033[94m================================================")
+    print("🤖 Vin Smart Future — Intelligent Chat Assistant")
+    print("Powered by Google Gemini 2.5 Flash")
+    print("Type 'quit' or 'exit' to end the session.")
+    print("================================================\033[0m\n")
+
+    history = []
+
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+
+        config = types.GenerateContentConfig(
+            temperature=0.7,
+            top_p=0.9,
+            max_output_tokens=512,
+        )
+
+        while True:
+            user_input = input("\033[92mYou: \033[0m").strip()
+
+            if user_input.lower() in ["quit", "exit"]:
+                print("\033[94mGoodbye!\033[0m")
+                break
+
+            if not user_input:
+                continue
+
+            if api_key == "mock-key":
+                print("\033[96mAssistant: \033[0mThis is a dummy response because GEMINI_API_KEY is not set.\n")
+                continue
+
+            context = ""
+
+            for turn in history[-3:]:
+                context += f"User: {turn['user']}\n"
+                context += f"Assistant: {turn['assistant']}\n"
+
+            full_prompt = context + f"User: {user_input}\nAssistant:"
+
+            print("\033[96mAssistant: \033[0m", end="", flush=True)
+
+            full_response = ""
+
+            stream = client.models.generate_content_stream(
+                model=GEMINI_MODEL,
+                contents=full_prompt,
+                config=config,
+            )
+
+            for chunk in stream:
+                chunk_text = getattr(chunk, "text", None)
+
+                if chunk_text:
+                    print(chunk_text, end="", flush=True)
+                    full_response += chunk_text
+
+            print("\n")
+
+            history.append({
+                "user": user_input,
+                "assistant": full_response,
+            })
+
+            history = history[-3:]
+
+    except Exception as e:
+        print(f"\033[91mChatbot failed to start: {e}\033[0m")
 
 
 # ---------------------------------------------------------------------------
@@ -214,21 +333,24 @@ def retry_with_backoff(
 ) -> Any:
     """
     Call fn(). If it raises an exception, retry up to max_retries times
-    with exponential backoff (delay = base_delay * 2^attempt).
-
-    Args:
-        fn:          Zero-argument callable to execute.
-        max_retries: Maximum number of retry attempts.
-        base_delay:  Initial delay in seconds before the first retry.
-
-    Returns:
-        The return value of fn() on success.
-
-    Raises:
-        The last exception raised by fn() after all retries are exhausted.
+    with exponential backoff.
     """
-    # TODO: implement retry loop with exponential backoff
-    raise NotImplementedError("Implement retry_with_backoff")
+    last_exception = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+
+        except Exception as e:
+            last_exception = e
+
+            if attempt == max_retries:
+                break
+
+            delay = base_delay * (2 ** attempt)
+            time.sleep(delay)
+
+    raise last_exception
 
 
 # ---------------------------------------------------------------------------
@@ -237,16 +359,20 @@ def retry_with_backoff(
 def batch_compare(prompts: list[str]) -> list[dict]:
     """
     Run compare_models on each prompt in the list.
-
-    Args:
-        prompts: List of prompt strings.
-
-    Returns:
-        List of dicts, each being the compare_models result with an extra
-        key "prompt" containing the original prompt string.
     """
-    # TODO: iterate over prompts, call compare_models, and inject the original "prompt".
-    raise NotImplementedError("Implement batch_compare")
+    results = []
+
+    for prompt in prompts:
+        result = compare_models(prompt)
+
+        result_with_prompt = {
+            "prompt": prompt,
+            **result,
+        }
+
+        results.append(result_with_prompt)
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -255,16 +381,55 @@ def batch_compare(prompts: list[str]) -> list[dict]:
 def format_comparison_table(results: list[dict]) -> str:
     """
     Format a list of batch compare results as a readable Markdown table string.
-
-    Args:
-        results: List of dicts as returned by batch_compare.
-
-    Returns:
-        A beautiful Markdown table string with columns:
-        | Prompt | Model | Response (truncated) | Latency | Tokens (In/Out) | Cost (USD) |
     """
-    # TODO: Build and return the formatted table string. Truncate response to 50 chars for clean display.
-    raise NotImplementedError("Implement format_comparison_table")
+    table = []
+    table.append("| Prompt | Model | Response (truncated) | Latency | Tokens (In/Out) | Cost (USD) |")
+    table.append("|---|---|---|---:|---:|---:|")
+
+    def truncate(text: str, max_len: int = 50) -> str:
+        text = str(text).replace("\n", " ").strip()
+        if len(text) <= max_len:
+            return text
+        return text[:max_len] + "..."
+
+    def clean_cell(text: str) -> str:
+        return str(text).replace("|", "\\|").replace("\n", " ").strip()
+
+    for item in results:
+        prompt = clean_cell(truncate(item.get("prompt", "")))
+
+        for model_key, model_result in item.items():
+            if model_key == "prompt":
+                continue
+
+            if not isinstance(model_result, dict):
+                continue
+
+            model_name = clean_cell(model_key)
+
+            response = clean_cell(
+                truncate(
+                    model_result.get("response")
+                    or model_result.get("response_text")
+                    or model_result.get("text")
+                    or ""
+                )
+            )
+
+            latency = model_result.get("latency", model_result.get("latency_seconds", 0.0))
+
+            usage = model_result.get("usage", {})
+            input_tokens = usage.get("input_tokens", model_result.get("input_tokens", 0))
+            output_tokens = usage.get("output_tokens", model_result.get("output_tokens", 0))
+
+            cost = model_result.get("cost", model_result.get("cost_usd", 0.0))
+
+            table.append(
+                f"| {prompt} | {model_name} | {response} | "
+                f"{latency:.2f}s | {input_tokens}/{output_tokens} | ${cost:.6f} |"
+            )
+
+    return "\n".join(table)
 
 
 # ---------------------------------------------------------------------------
