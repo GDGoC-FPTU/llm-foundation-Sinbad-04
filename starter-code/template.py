@@ -49,17 +49,6 @@ def call_openai(
     api_key = os.getenv("OPENAI_API_KEY") or "mock-key"
     start_time = time.time()
 
-    if api_key == "mock-key":
-        latency = time.time() - start_time
-        return (
-            "Mock OpenAI response",
-            latency,
-            {
-                "input_tokens": len(prompt.split()),
-                "output_tokens": 10,
-            },
-        )
-
     try:
         from openai import OpenAI
 
@@ -67,7 +56,9 @@ def call_openai(
 
         response = client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
             temperature=temperature,
             top_p=top_p,
             max_tokens=max_tokens,
@@ -86,6 +77,7 @@ def call_openai(
 
     except Exception as e:
         latency = time.time() - start_time
+
         return (
             f"[OpenAI error] {str(e)}",
             latency,
